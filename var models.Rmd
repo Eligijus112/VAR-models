@@ -1,0 +1,1028 @@
+---
+title: "VAR models"
+author:
+- "Eligijus Bujokas"
+- "Vilnius University, Faculty of Informatics and mathematics"
+# author: "Eligijus Bujokas"
+date: "December 6, 2016"
+runtime: shiny
+output:
+  html_document:
+    toc: true
+    toc_float:
+     collapsed: false
+    theme: flatly
+    highlight: tango
+    dev: pdf
+---
+
+```{r setup, include=FALSE}
+library(shiny)
+library(vars)
+library(texreg)
+library(tseries)
+library(dplyr)
+library(Hmisc)
+library(lmtest)
+library(forecast)
+library(normwhn.test)
+source('functions.R')
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Overview
+
+In this task we will create a VAR (vector auto-reggresion) model for the data of UK and Germany trading. The data is monthly and spans from 1999 to 2014. The vector will be:
+
+$\left(\Delta(y - y^{*}), \Delta (p - p^{*}), \Delta (i - i^{*}), \Delta q\right)$
+
+Here:
+
+$y$ - index for production growth
+
+$p$ - inflation rates
+
+$i$ - T-bills rates
+
+$q$ - exchange rate between the pound (UK) and the euro (GER)
+
+$y^{*}, p^{*}, i^{*}$ means that these products represent United Kingdom.
+
+##Original data
+
+```{r code for original data, echo=F}
+
+shinyApp(
+  ui = fluidPage(
+    fileInput(inputId = "file1", label = "Upload data"),
+    helpText("The head of the data table"),
+    tableOutput("table"),
+
+    uiOutput("select.prod"),
+     actionButton("Regural", label = "Original data"),
+     actionButton("Log", label = "Log transformation"),
+     plotOutput('plot'),
+     actionButton("Save.r", label = "Save regural data", icon = icon("floppy-o")),
+     actionButton("Save.l", label = "Log data"),
+     uiOutput("log.choice"),
+     uiOutput("save", icon = icon("floppy-o"))
+  ),
+  
+  server = function(input, output, session) {
+
+  myData <- reactive({
+     inFile <- input$file1
+     tmp.data <- read.csv2(inFile$datapath)
+     colnames(tmp.data) <- c("Time", "y_GER", "y_UK", "p_GER", "p_UK", "i_GER", "i_UK", "EX")
+     tmp.data <- data.frame(tmp.data)
+     tmp.data
+  })
+
+  output$table <- renderTable({
+    myData()[1:6, ]
+  })
+  
+  output$text <- renderText({
+    colnames(myData()[, -1])
+  })
+  
+
+  output$select.prod <- renderUI({
+    selectInput("y_input", "Select variable",
+                choices = colnames(myData()[, -1]))
+                
+  })
+    
+     observeEvent(input$Log, {
+      output$plot <- renderPlot({
+      plot(ts(log(myData()[, input$y_input]), freq=12, start=1999),
+              ylab = input$y_input, xlab = "Year", col='darkorchid4', lwd=2)
+      grid()
+      
+      })
+    })
+
+    observeEvent(input$Regural, {
+      output$plot <- renderPlot({
+      plot(ts(myData()[, input$y_input], freq=12, start=1999),
+              ylab = input$y_input, xlab = "Year", col='darkorchid4', lwd=2)
+      grid()
+      
+      })
+    })
+
+    observeEvent(input$Save.r, {
+      write.csv(myData(), file="adjusted data/data.csv", row.names=F)
+    })
+    
+    observeEvent(input$Save.l, {
+     
+     output$log.choice <-  renderUI({
+       checkboxGroupInput("log.vars", label = "Which variables to log?", choices = colnames(myData()[, -1]), selected = colnames(myData()[, -1]))
+     })
+    
+     output$save <-  renderUI({
+        actionButton("save.logs", "Save logs", icon = icon("floppy-o"))
+      })
+     
+    })
+    
+    observeEvent(input$save.logs, { 
+     myData <- reactive({
+     inFile <- input$file1
+     tmp.data <- read.csv2(inFile$datapath)
+     colnames(tmp.data) <- c("Time", "y_GER", "y_UK", "p_GER", "p_UK", "i_GER", "i_UK", "EX")
+     tmp.data <- data.frame(tmp.data)
+     tmp.data[, input$log.vars] <- apply(tmp.data[, input$log.vars], c(1, 2), function(x){log(x)})
+     tmp.data
+  })
+      write.csv(myData(), file="adjusted data/data.csv", row.names=F)
+    })
+        
+},  options = list(height = 1200))
+```
+
+##Data to be used in VAR model
+
+As was said in the overview, we need the vector $\left(\Delta(y - y^{*}), \Delta (p - p^{*}), \Delta (i - i^{*}), \Delta q\right)$. 
+
+```{r vector for analysis, echo=F}
+
+shinyApp(
+  ui = fluidPage(
+    # 
+    # fileInput(
+    #   'file', 
+    #   'Please upload the data again'
+    # ),
+    actionButton("update", "Update", icon=icon("hand-peace-o")),
+    selectInput(
+      "y_input", 
+      label = h5("Select coordinate of the vector above"),
+      "I will change soon"
+    ),
+     plotOutput('plot')
+  ),
+  
+  server = function(input, output, session) {
+  
+  observeEvent(input$update, {
+     myData <- reactive({
+     tmp.data <-  read.csv("adjusted data/data.csv")
+     colnames(tmp.data) <- c("Time", "y_GER", "y_UK", "p_GER", "p_UK", "i_GER", "i_UK", "EX")
+     var.data <- data.frame("y"= diff(tmp.data$y_GER - tmp.data$y_UK), 
+                            "p"= diff(tmp.data$p_GER - tmp.data$p_UK),
+                            "i"= diff(tmp.data$i_GER - tmp.data$i_UK),
+                            "q"= diff(tmp.data$EX))
+     var.data
+    
+   })
+  
+  observe({
+    updateSelectInput(
+      session,
+      "y_input",
+      choices=colnames(myData()))
+  })
+  
+  output$plot <- renderPlot({
+     plot(ts(myData()[, input$y_input], freq=12, start=1999), 
+              ylab = input$y_input, xlab = "Year", col='darkorchid4', lwd=2)
+    series <- ts(myData()[, input$y_input], freq=12, start=1999)
+    series <- series[!is.na(series)]
+    statistic <- adf.test(series)
+    seasonality <- ets(series)$method
+    legendary2(c(paste("ETS model:", seasonality), paste("Adf test p value", round(statistic$p.value, 2))), col=c("blue", "red"), cex=1.5)
+    grid()
+    })
+  })
+},
+ options = list(height = 600))
+```
+
+As we can see from the graphs and the test results, all of our variables are stationary and do not appear to have a seasonal component.
+
+#Unrestricted VAR model
+
+We will now create the unrestricted VAR(p) model. The first problem is to figure out which order should the process be. We will use Akaike's and Schwarz's information criterias. The criterias are: 
+
+$$AIC(p) = ln \left(\widehat{\Sigma}_{v}(p) \right) + \dfrac{2}{T} p n^{2}$$
+
+$$SW(p) = ln \left(\widehat{\Sigma}_{v}(p) \right) + \dfrac{ln T}{T} p n^{2}$$
+
+$p$ - the number of lags in our model.
+
+$\widehat{\Sigma}_{v}(p)$ the fitted variance matrix of the model's residuals with $p$ number of lags.
+
+$T$ - number of observations.
+
+$n$ - nubmer of endogenous variables in the system.
+
+```{r initial VAR model, echo=F}
+
+shinyApp(
+  ui = fluidPage(
+    actionButton("update", "Update", icon=icon("hand-peace-o")), 
+    sliderInput(inputId="lag.crit", label="Select the number of lags", min=1, max=10, value = 1),
+     tableOutput('text'),
+     plotOutput('plot'),
+     htmlOutput('min.index'),
+     sliderInput('lag', "Select lag", min=1, max=10, value=1), 
+     htmlOutput("formula"),
+     actionButton("save.model", "Save model")
+  ),
+  
+  server = function(input, output, session) {
+  observeEvent(input$update, {
+  myData <- reactive({
+     tmp.data <-  read.csv("adjusted data/data.csv")
+     colnames(tmp.data) <- c("Time", "y_GER", "y_UK", "p_GER", "p_UK", "i_GER", "i_UK", "EX")
+     var.data <- data.frame("y"= diff(tmp.data$y_GER - tmp.data$y_UK), 
+                            "p"= diff(tmp.data$p_GER - tmp.data$p_UK),
+                            "i"= diff(tmp.data$i_GER - tmp.data$i_UK),
+                            "q"=diff(tmp.data$EX))
+     trim.index <- which(apply(is.na(var.data[, 1:length(var.data)]), 1, any))
+     if(length(trim.index!=0)) var.data <- var.data[-trim.index, ]
+     var.data
+  })
+  
+  results <- reactive({
+    AIC  <- numeric(input$lag.crit)
+    SW   <- numeric(input$lag.crit)
+    SC   <- numeric(input$lag.crit)
+    AFPE <- numeric(input$lag.crit)
+    
+    for(j in 1:input$lag.crit){
+      model  <- VAR(myData(), p = j)
+      AIC[j] <- AIC(model)
+      SW[j]  <- BIC(model)
+    }
+    result.table <- matrix(ncol=input$lag.crit, nrow=2) %>% as.data.frame()
+    result.table[1, ] <- AIC
+    result.table[2, ] <- SW
+    colnames(result.table) <- paste(1:input$lag.crit)
+    rownames(result.table) <- c("Akaike", "Schwarz")
+    result.table
+    
+  })
+  
+  output$text <- renderTable({
+    results()
+    })
+  
+  output$plot <- renderPlot({
+    
+    aic <- results()[1, ] %>% as.numeric()
+    sw  <- results()[2, ] %>% as.numeric()
+    points <- cbind(aic, sw) %>% as.data.frame()
+    colnames(points) <- c("AIC", "SW")
+    plot(points$AIC, type="o", pch=19, col="blue", lwd=2, xlab="p", ylim=c(min(points), max(points)), ylab="criteria value")
+    lines(points$SW, type="o", pch=19, col="red", lwd=2)
+    legendary2(c('Akaike', 'Schwarz'), col=c("blue", "red"), cex=1.5)
+    grid()
+  })
+  
+  output$min.index <- renderUI({
+    value <- which(results() == min(results(), na.rm=T), arr.ind=TRUE)
+    lag   <- colnames(results())[value[, 2]]
+    str <- paste("The suggested lag is", lag)
+    HTML(paste(str, sep = '<br/>'))
+  })
+ 
+   model <- reactive({
+    VAR(myData(), p = input$lag)
+  })
+  
+  output$formula <- renderPrint({
+    htmlreg(model()$varresult)
+  }) 
+  
+  observeEvent(input$save.model, {
+    write.table(input$lag, file="p.txt", row.names = F)
+  })
+  })
+},
+ options = list(height = 1200))
+```
+
+##Residual testing 
+
+Now that we have our VAR model, we need to check whether the residuals of this model are not autocorrelated and are stationary.
+
+```{r residual testing, echo=F}
+
+shinyApp(
+  ui <- fluidPage(
+    actionButton("update", "Update", icon=icon("hand-peace-o")), 
+    selectInput( "res", 
+      label = h5("Select the equation for the residuals"),
+      "Equation"
+    ),
+    plotOutput("plot"),
+    sliderInput("lag", label = "Select the number of lags for the auto-correlation test", min=1, max=10, value = 1),
+    htmlOutput("text"),
+    plotOutput("ACF")
+),
+
+server <- function(input, output, session){
+   observeEvent(input$update, {
+    myData <- reactive({
+     tmp.data <- read.csv("adjusted data/data.csv")
+     colnames(tmp.data) <- c("Time", "y_GER", "y_UK", "p_GER", "p_UK", "i_GER", "i_UK", "EX")
+     var.data <- data.frame("y"= diff(tmp.data$y_GER - tmp.data$y_UK), 
+                            "p"= diff(tmp.data$p_GER - tmp.data$p_UK),
+                            "i"= diff(tmp.data$i_GER - tmp.data$i_UK),
+                            "q" =diff(tmp.data$EX))
+     trim.index <- which(apply(is.na(var.data[, 1:length(var.data)]), 1, any))
+     if(length(trim.index!=0)) var.data <- var.data[-trim.index, ]
+     var.data
+  })
+  
+  results <- reactive({
+    lag <- as.numeric(read.table("p.txt", stringsAsFactors = F)[2, ])
+    VAR(myData(), p = lag)
+  })
+  
+  observe({
+    updateSelectInput(
+       session,
+      "res",
+      choices = names(results()$varresult) 
+    )
+  })
+  
+  output$plot <- renderPlot({
+     plot(residuals(results())[, input$res], 
+         xlab = "Index of residual", col='darkorchid4', lwd=2, pch=19, type="l", ylab=paste("Residual of", input$res))
+    grid()
+    
+    series <- residuals(results())[, input$res]
+    series <- series[!is.na(series)]
+    statistic <- adf.test(series)
+    legendary2(paste("Adf test p value", round(statistic$p.value, 2)), col="red", cex=1.5)
+    abline(a = 0, b =0, col="red", lwd=2)
+    })
+  
+    output$text <- renderUI({
+    res <- residuals(results())[, input$res]
+    test.p <- Box.test(res, type="Ljung-Box", lag=as.numeric(input$lag))$p.value
+    test.statistic <- Box.test(res, type="Ljung-Box", lag=as.numeric(input$lag))$statistic
+    
+    str1 <- paste("The Ljung-Box test statistic for the autocorrelation of the ", input$res, "eqaution residuals is:",         round(test.statistic, 3))
+    str2 <- paste("The p-value is:", round(test.p, 3))
+    HTML(paste(str1, str2, sep = '<br/>'))
+   })
+    
+    output$ACF <- renderPlot({
+      acf(residuals(results())[, input$res], main = input$res)
+    })
+
+  })
+},
+ options = list(height = 1200))
+```
+
+### Correlation between several equations
+
+ We need to check whether every correlation between the equations' residuals is not significant.
+
+```{r correlation between equations, echo=F}
+
+ shinyApp(
+   ui <- fluidPage(
+     actionButton("update", "Update", icon=icon("hand-peace-o")),
+     selectInput( "res1",
+       label = h5("Select the first residuals"),
+       "Equation"
+     ),
+
+     selectInput( "res2",
+       label = h5("Select the second residuals"),
+       "Equation"
+     ),
+      plotOutput("plot"),
+      htmlOutput('statistics'),
+      actionButton("remove", "Is there an equation to ommit?", icon=icon("question-circle")),
+      uiOutput("choices"),
+      uiOutput("save"),
+      uiOutput("restore"),
+      uiOutput("adjust"),
+      htmlOutput("new.formula"),
+      uiOutput("choices.new"),
+      plotOutput("res.new"),
+      plotOutput("new.aic"),
+      helpText("The p value of the correlation coefficients between the residuals of equations"),
+      tableOutput("new.cor")
+ ),
+
+ server <- function(input, output, session){
+    observeEvent(input$update, {
+     myData <- reactive({
+      tmp.data <- read.csv("adjusted data/data.csv")
+      colnames(tmp.data) <- c("Time", "y_GER", "y_UK", "p_GER", "p_UK", "i_GER", "i_UK", "EX")
+      var.data <- data.frame("y" = diff(tmp.data$y_GER - tmp.data$y_UK),
+                             "p" = diff(tmp.data$p_GER - tmp.data$p_UK),
+                             "i" = diff(tmp.data$i_GER - tmp.data$i_UK),
+                             "q" = diff(tmp.data$EX))
+      trim.index <- which(apply(is.na(var.data[, 1:length(var.data)]), 1, any))
+      if(length(trim.index!=0)) var.data <- var.data[-trim.index, ]
+      var.data  
+      })
+
+   results <- reactive({
+    lag <- as.numeric(read.table("p.txt", stringsAsFactors = F)[2, ])
+    VAR(myData(), p = lag)
+   })
+
+   observe({
+     updateSelectInput(
+        session,
+       "res1",
+       choices = names(results()$varresult)
+     )
+   })
+
+     observe({
+     updateSelectInput(
+        session,
+       "res2",
+       choices = names(results()$varresult)
+     )
+   })
+
+    output$plot <- renderPlot({
+
+      res1 <- residuals(results())[, input$res1]
+      res2 <- residuals(results())[, input$res2]
+      dim.min <- min(length(res1), length(res2))
+      points <- cbind(res1[1:dim.min], res2[1:dim.min])
+      plot(y=points[, 1], x=seq(from=1999, to=2016, length.out = dim(points)[1]),
+              type="l", col="blue", xlab="time", lwd=2, ylab=paste(input$res1, input$res2), ylim=c(min(points), max(points)))
+      lines(points[, 2],  x=seq(from=1999, to=2016, length.out = dim(points)[1]), col="red", lwd=2)
+      grid()
+      legendary2(c(as.character(input$res1), as.character(input$res2)), col=c("blue", "red"), cex=1.5)
+    })
+    
+      output$statistics <- renderText({
+        points <- residuals(results())
+        cor.st <- cor(points) %>% apply(c(1, 2), function(x) {round(x, 3)})
+        p.matrix <- rcorr(points)$P %>% apply(c(1, 2), function(x) {round(x, 3)})
+        p.matrix[is.na(p.matrix)] <- 1
+        row.index <- which(rownames(cor.st)==input$res1)
+        col.index <- which(colnames(cor.st)==input$res2)
+        char1 <- paste("The correlation coefficient is", cor.st[row.index, col.index])
+        char2 <- paste("The p value of the coefficient is", p.matrix[row.index, col.index])
+        HTML(char1, char2, sep = '<br/>')
+      })
+      
+        observeEvent(input$remove, {
+      output$choices <- renderUI({
+        checkboxGroupInput("to.rm", label = "Select variables to remove", choices = colnames(myData()))
+      })
+      
+      output$save <- renderUI({
+        actionButton("save", "Save changes", icon=icon("floppy-o"))
+      })
+      
+      output$restore <- renderUI({
+        actionButton("restore", "Restore to initial data", icon=icon("reply-all"))
+      })
+
+      output$adjust <- renderUI({
+        actionButton("adjust", "Adjust initial model", icon=icon("hand-o-right"))
+      })
+    })
+        
+        
+    observeEvent(input$adjust, {
+      
+     new.results <- reactive({
+       lag <- as.numeric(read.table("p.txt", stringsAsFactors = F)[2, ])
+       new.data <- read.csv("adjusted data/trimmed data.csv")
+       VAR(new.data, p = lag)
+     })
+    
+    output$new.formula <- renderPrint({
+       htmlreg(new.results()$varresult)
+      }) 
+    
+    output$choices.new <- renderUI({
+        selectInput("new.res", choices=names(read.csv("adjusted data/trimmed data.csv")), "Select residuals of the revised model")    
+      })
+    
+    output$res.new <- renderPlot({
+       plot(residuals(new.results())[, input$new.res], 
+           xlab = "Index of residual", col='darkorchid4', lwd=2, pch=19, type="l", ylab=paste("Residual of", input$new.res))
+      grid()
+      
+      series <- residuals(new.results())[, input$new.res]
+      series <- series[!is.na(series)]
+      statistic <- adf.test(series)
+      legendary2(paste("Adf test p value", round(statistic$p.value, 2)), col="red", cex=1.5)
+      abline(a = 0, b =0, col="red", lwd=2)
+      })
+    
+    output$new.aic <- renderPlot({
+      acf(residuals(new.results())[, input$new.res], main = input$new.res)
+    })
+    
+    output$new.cor <- renderTable({
+      (residuals(new.results()) %>% rcorr())$P
+     }, digits=4)
+    })    
+    
+    observeEvent(input$save, {
+      rm.index <- grep(input$to.rm, colnames(myData()))
+      if(length(rm.index)!=0){
+       write.csv(myData()[, -rm.index], file="adjusted data/trimmed data.csv", row.names=F, na="")
+      }
+    })
+    
+    observeEvent(input$restore, {
+       write.csv(myData(), file="adjusted data/trimmed data.csv", row.names=F, na="")
+    })
+    })
+},
+ options = list(height = 1600))
+```
+
+##Interpretation of the revised model
+
+Based on the analysis above I have concluded that the final model will be: 
+
+$$Y_{t} = c + A Y_{t-1} + \epsilon $$ 
+
+Here 
+
+$Y_{y} = \left(\Delta (log (y_{t}) - log (y_{t}^{*})) , \Delta (p_{t} - p_{t}^{*}), \Delta q_{t} \right)$
+
+For the variable $\Delta(y - y^{*})$ there are two significant variables - the lag of the $\Delta(y - y^{*})$ and the lag of $\Delta(q)$. According to our model, a positive change (percentage) to the $y - y^{*}$ variable in one previous period would have a negative impact to the future value of  $y - y^{*}$. This means that the historical gaps of production outputs (in our case - between Germany and the UK) significantly influences the future values of these gaps. If the gap widened in the past it is likely to shrink in the future.
+
+Furthermore, the past fluctuations of the exchange rates also influence the widening of the production output of the two countries. The negative coefficient means that the stronger the euro is, the wider the gap between the production outputs will be.
+
+For the variable $\Delta(p - p^{*})$ the only significant variable is the lag of itself. The positive coefficient means that if the differences of the prices between the countries increased in the past, then in the future the gap between the price levels will only increase. 
+
+The changes in exchange rates (a positive change means that the pound is getting 'stronger' and a negative impact means that the EURO is getting 'stronger') is significantly positively influenced by the changes in the price level. If the price level in Germany increases more than in the UK then the demand for UK's pound will increase (because the goods there are cheapier).
+
+#Granger causality
+
+Given two sets of time series data, x and y, granger-causality is a method which attempts to determine whether one series is likely to influence change in the other. Let us denote two models:
+
+$$ y^{*} := y_{t} = \beta_{0} + \beta_{1}y_{t-1} + ... + \beta_{p}y_{t-p} + \epsilon $$ 
+
+$$ y^{**} := y_{t} =\beta_{0} + \beta_{1}y_{t-1} + ... + \beta_{p}y_{t-p} + \alpha_{1}x_{t - 1} + ... + \alpha_{p} x_{t - p} + \epsilon  $$
+
+The residual sums of squared errors are then compared and a test is used to determine whether the model without other exogenous variables ($y^{*}$) is adequate to explain the future values of y or if the full model ($y^{**}$) is better. The hypothesis are:
+
+$$H_{0}: \alpha_{i} = 0, \forall i=1, ..., p $$
+
+$$H_{1}: \exists i=1, ..., p : \alpha_{i} \neq 0  $$
+
+We will test these hypothesis by using the grangertest() function in the lmtest package. 
+
+```{r granger causality, echo=F}
+
+ shinyApp(
+   ui <- fluidPage(
+     actionButton("update", "Update", icon=icon("hand-peace-o")),
+     selectInput( "var1",
+       label = h5("Select the dependant variable"),
+       "Equation"
+     ),
+
+     selectInput( "var2",
+       label = h5("Select the explanatory variable"),
+       "Equation"
+     ),
+       
+     sliderInput( "lag",
+      label = h5("Select the max order of lag in the auxillary regression"),
+      min = 1, max=10, value=4
+     ),
+      htmlOutput('info'),
+      tableOutput('table1'),
+      htmlOutput('info2'),
+      tableOutput('table2')
+     
+ ),
+
+ server <- function(input, output, session){
+   observeEvent(input$update, {
+     myData <- reactive({
+       
+      file.list <-  list.files(paste0(getwd(), "/adjusted data"))
+      
+      if(length(which(file.list=="trimmed data.csv"))==0){
+      colnames(tmp.data) <- c("Time", "y_GER", "y_UK", "p_GER", "p_UK", "i_GER", "i_UK", "EX")
+      var.data <- data.frame("y" = diff(tmp.data$y_GER - tmp.data$y_UK),
+                             "p" = diff(tmp.data$p_GER - tmp.data$p_UK),
+                             "i" = diff(tmp.data$i_GER - tmp.data$i_UK),
+                             "q" = diff(tmp.data$EX))
+      trim.index <- which(apply(is.na(var.data[, 1:length(var.data)]), 1, any))
+      if(length(trim.index!=0)) var.data <- var.data[-trim.index, ]
+      var.data  
+      } else {
+        read.csv("adjusted data/trimmed data.csv")
+      }
+    })
+
+   observe({
+     updateSelectInput(
+        session,
+       "var1",
+       choices = colnames(myData())
+     )
+   })
+
+     observe({
+     updateSelectInput(
+        session,
+       "var2",
+       choices = colnames(myData())
+     )
+   })
+  
+    results <- reactive({
+      F.value  <- numeric(input$lag)
+      p.value  <- numeric(input$lag)
+        
+      for(j in 1:input$lag){
+        test  <- grangertest(myData()[, input$var1], myData()[, input$var2], order=j)
+        F.value[j] <- test[[3]][2] %>% round(3)
+        p.value[j] <- test[[4]][2] %>% round(3)
+      }
+      result.table <- matrix(ncol=input$lag, nrow=2) %>% as.data.frame()
+      result.table[1, ] <- F.value
+      result.table[2, ] <- p.value
+      colnames(result.table) <- paste(1:input$lag)
+      rownames(result.table) <- c("F statistic", "p - value")
+      result.table
+  })
+     
+    output$table1 <- renderTable({
+     results()
+    }, digits=4)
+    
+      results2 <- reactive({
+        F.value  <- numeric(input$lag)
+        p.value  <- numeric(input$lag)
+          
+        for(j in 1:input$lag){
+          test  <- grangertest(myData()[, input$var2], myData()[, input$var1], order=j)
+          F.value[j] <- test[[3]][2] %>% round(3)
+          p.value[j] <- test[[4]][2] %>% round(3)
+        }
+        result.table <- matrix(ncol=input$lag, nrow=2) %>% as.data.frame()
+        result.table[1, ] <- F.value
+        result.table[2, ] <- p.value
+        colnames(result.table) <- paste(1:input$lag)
+        rownames(result.table) <- c("F statistic", "p - value")
+        result.table
+   })
+     
+    output$table2 <- renderTable({
+     results2()
+    }, digits=4)
+    
+    
+    output$info <- renderText({
+      str <- paste("Results for the", input$var1, "~", input$var2, "equation")
+      HTML(str, sep = '<br/>')
+    })
+    
+     output$info2 <- renderText({
+      str <- paste("Reverse equation:", input$var2, "~", input$var1, "equation")
+      HTML(str, sep = '<br/>')
+    })
+   })
+},
+ options = list(height = 600))
+```
+
+#Impulse response analysis
+
+VAR models are often used to determine the effect of an 'impuls' - a sudden increase in one of the variables in the model value. We want to know by how much the values of our endogenous variable change based on the change in the vector coordinates. So far we have the system:
+
+$$Y_{t} = c + A Y_{t-1} + \epsilon $$ 
+
+```{r IRF, echo=F}
+
+ shinyApp(
+   ui <- fluidPage(
+    actionButton("update", "Update", icon=icon("hand-peace-o")),
+    textOutput("snip"),  
+    tableOutput("A.matrix"),
+    
+     selectInput( "var1",
+       label = h5("Select the variable which will be analyzed"),
+       "Equation"
+     ),
+
+    numericInput( "y",
+       label = h5("Select the impuls to the y variable"),
+       value = 0
+     ),
+
+       numericInput( "p",
+       label = h5("Select the impuls to the p variable"),
+       value = 0
+     ),
+
+       numericInput( "i",
+       label = h5("Select the impuls to the i variable"),
+       value = 0
+     ),
+
+       numericInput( "q",
+       label = h5("Select the impuls to the q variable"),
+       value = 0
+     ),
+    
+    sliderInput("steps", label = "Steps to visualize", value=5, min=1, max=20),
+     helpText('The impuls response functions values with the selected initial shocks:'),
+    tableOutput("impuls.fn"),
+    helpText('Results with ortogonal errors:'),
+    tableOutput("impuls.fn.ort"),
+    plotOutput("plot"),
+    uiOutput("selectors")
+ ),
+
+ server <- function(input, output, session){
+
+   power.matrix <- function(A, power){
+     new.A <- A
+     
+     if(power==1){
+       return(A)
+     } else {
+       
+       for(j in 1:(power - 1)){
+         new.A <- new.A %*% A
+       }
+       return(new.A)
+       }
+  }
+    observeEvent(input$update, {
+       myData <- reactive({
+       
+      file.list <-  list.files(paste0(getwd(), "/adjusted data"))
+      
+      if(length(which(file.list=="trimmed data.csv"))==0){
+      tmp.data <- read.csv("adjuset data/data.csv", stringsAsFactors = F)  
+      var.data <- data.frame("y" = diff(tmp.data$y_GER - tmp.data$y_UK),
+                             "p" = diff(tmp.data$p_GER - tmp.data$p_UK),
+                             "i" = diff(tmp.data$i_GER - tmp.data$i_UK),
+                             "q" = diff(tmp.data$EX))
+      trim.index <- which(apply(is.na(var.data[, 1:length(var.data)]), 1, any))
+      if(length(trim.index!=0)) var.data <- var.data[-trim.index, ]
+      var.data  
+      } else {
+        read.csv("adjusted data/trimmed data.csv")
+      }
+    })
+
+   observe({
+     updateSelectInput(
+        session,
+       "var1",
+       choices = colnames(myData())
+     )
+   })
+   
+   model <- reactive({
+    lag <- as.numeric(read.table("p.txt", stringsAsFactors = F)[2, ])
+    VAR(myData(), p = lag)
+   })
+   
+   coef.matrix <- reactive({
+       A.matrices <- Acoef(model())
+      if(length(A.matrices)!=1){
+        leading.form.A <- matrix(0, ncol=length(A.matrices)*dim(A.matrices[[1]])[2],
+                                 nrow=dim(A.matrices[[1]])[1]*max(2, length(A.matrices)))
+        I <- matrix(0, ncol=dim(A.matrices[[1]])[2], nrow=dim(A.matrices[[1]])[2])
+        diag(I) <- 1
+        
+        leading.form.A[1:dim(A.matrices[[1]])[1], ] <- do.call(cbind, A.matrices)
+        leading.form.A[(dim(A.matrices[[1]])[1]+1):(2*dim(A.matrices[[1]])[1]), (1:dim(I)[2])] <- I
+        leading.form.A
+      } else {
+        Acoef(model())[[1]]
+      }
+   })
+    
+   output$snip <- renderText({
+   "The initial A matrix" 
+   })
+   
+    output$A.matrix <- renderTable({
+      coef.matrix()
+    },  include.rownames=FALSE, include.colnames=FALSE,  digits=4)
+   
+    impuls.reaction <- reactive({
+      
+       A.matrices <- Acoef(model())
+      if(length(A.matrices)!=1){
+        leading.form.A <- matrix(0, ncol=length(A.matrices)*dim(A.matrices[[1]])[2],
+                                 nrow=dim(A.matrices[[1]])[1]*max(2, length(A.matrices)))
+        I <- matrix(0, ncol=dim(A.matrices[[1]])[2], nrow=dim(A.matrices[[1]])[2])
+        diag(I) <- 1
+        
+        leading.form.A[1:dim(A.matrices[[1]])[1], ] <- do.call(cbind, A.matrices)
+        leading.form.A[(dim(A.matrices[[1]])[1]+1):(2*dim(A.matrices[[1]])[1]), (1:dim(I)[2])] <- I
+      } else {
+        leading.form.A <- Acoef(model())[[1]]
+      }
+                      
+      impuls.vector <- c(input$y, input$p, input$i, input$q)
+      ind <- which(c("y", "p", "i", "q") == setdiff(c("y", "p", "i", "q"), colnames(myData())))
+      if(length(ind)!=0) impuls.vector <- impuls.vector[-ind]
+      
+      if(length(A.matrices)!=1){
+        impuls.vector <- c(impuls.vector, rep.int(rep(0, length(impuls.vector)), length(A.matrices) - 1))
+      }
+      
+      result.matrix <- matrix(nrow=length(impuls.vector), ncol=input$steps)
+      
+      result.matrix[, 1] <- impuls.vector
+      
+      for(step in 2:input$steps){
+        result.matrix[, step] <-  power.matrix(coef.matrix(), step) %*% impuls.vector
+      }
+      
+      colnames(result.matrix) <- paste(1:input$steps)
+      
+      if(length(A.matrices)!=1){
+        row.names(result.matrix) <- c(colnames(myData()), rep.int(paste0("L",colnames(myData())), length(A.matrices) - 1))
+      } else {
+        rownames(result.matrix) <- colnames(myData())
+      }
+      result.matrix <- apply(result.matrix, c(1, 2), function(x){round(x, 4)})
+      result.matrix
+    })
+   
+    ortogonal.impuls.reaction <- reactive({
+      
+      if(length(Acoef(model()))==1){
+        impuls.vector <- c(input$y, input$p, input$i, input$q)
+        ind <- which(c("y", "p", "i", "q") == setdiff(c("y", "p", "i", "q"), colnames(myData())))
+        if(length(ind)!=0) impuls.vector <- impuls.vector[-ind]
+        
+        result.matrix <- matrix(nrow=length(impuls.vector), ncol=input$steps)
+        
+        result.matrix[, 1] <- impuls.vector
+        sigma <- var(residuals(model()))
+        
+        ## Granger
+        initial.order <- colnames(sigma)
+        for(j in colnames(sigma)){
+          for(i in colnames(sigma)){
+           if(i==j) next
+            test <- grangertest(myData()[, j], myData()[, i], order=as.numeric(read.table("p.txt", stringsAsFactors = F)[2, ]))
+            p <- test$`Pr(>F)`[2]
+            if(p < 0.05){
+              initial.order <- initial.order[-which(initial.order==i)]
+              initial.order <- c(i, initial.order)
+            }
+          }
+        }
+        
+        sigma <-var(residuals(model())[, initial.order])
+        
+        P <- chol(sigma)
+        
+        for(step in 2:input$steps){
+          result.matrix[, step] <-  power.matrix(coef.matrix(), step) %*% P %*% impuls.vector
+        }
+        
+        colnames(result.matrix) <- paste(1:input$steps)
+        rownames(result.matrix) <- colnames(myData())
+        result.matrix <- apply(result.matrix, c(1, 2), function(x){round(x, 4)})
+        result.matrix
+      } else {
+        impuls.reaction()
+      }
+    })
+    
+   output$impuls.fn <- renderTable({
+     impuls.reaction()
+   },  digits=4)
+   
+    output$impuls.fn.ort <- renderTable({
+     ortogonal.impuls.reaction()
+   },  digits=4)
+    
+   output$plot <- renderPlot({
+     values <- cbind(impuls.reaction()[input$var1, ], ortogonal.impuls.reaction()[input$var1, ])
+     matplot(values, main=paste("Changes in", input$var1), ylab="Function's value", xlab="Time period", lwd=2, type="o", pch=19, col=c("red","blue"))
+     grid()
+     legendary2(c("Not adjusted", "Ortogonal"), col=c("red", "blue"))
+     })
+    })
+},
+ options = list(height = 1500)
+)
+```
+
+#Forecast variance error decomposition
+
+Variance decomposition or forecast error variance decomposition (FEVD) is used to aid in the interpretation of a vector autoregression (VAR) model once it has been fitted. The variance decomposition indicates the amount of information each variable contributes to the other variables in the autoregression. It determines how much of the forecast error variance of each of the variables can be explained by exogenous shocks to the other variables. 
+
+```{r variance decomposition, echo=F}
+ # global.data <- read.csv2(file="input/data.csv")
+
+ shinyApp(
+   ui <- fluidPage(
+     actionButton("update", "Update", icon=icon("hand-peace-o")),
+     selectInput( "var1",
+       label = h5("Select the variable which will be analyzed"),
+       "Equation"
+     ),
+    
+    sliderInput("steps", label = "Number of time periods ahead to forecast", value=5, min=1, max=20),
+    actionButton("plot", label = "Regural plot"),
+    actionButton("bar.plot", label = "Bar plot"),
+    hr(),
+    plotOutput("results"), 
+    actionButton("numeric.matrix", label = "Show numeric output"),
+    actionButton("hide.numeric.matrix", label = "Hide numeric output"),
+    hr(),
+    tableOutput("numeric")
+ ),
+
+ server <- function(input, output, session){
+    observeEvent(input$update, {
+       myData <- reactive({
+       
+      file.list <-  list.files(paste0(getwd(), "/adjusted data"))
+      
+      if(length(which(file.list=="trimmed data.csv"))==0){
+      colnames(tmp.data) <- c("Time", "y_GER", "y_UK", "p_GER", "p_UK", "i_GER", "i_UK", "EX")
+      var.data <- data.frame("y" = diff(tmp.data$y_GER - tmp.data$y_UK),
+                             "p" = diff(tmp.data$p_GER - tmp.data$p_UK),
+                             "i" = diff(tmp.data$i_GER - tmp.data$i_UK),
+                             "q "= diff(tmp.data$EX))
+      trim.index <- which(apply(is.na(var.data[, 1:length(var.data)]), 1, any))
+      if(length(trim.index!=0)) var.data <- var.data[-trim.index, ]
+      var.data  
+      } else {
+        read.csv("adjusted data/trimmed data.csv")
+      }
+    })
+     
+
+   observe({
+     updateSelectInput(
+        session,
+       "var1",
+       choices = colnames(myData())
+     )
+   })
+   
+   model <- reactive({
+    lag <- as.numeric(read.table("p.txt", stringsAsFactors = F)[2, ])
+    VAR(myData(), p = lag)
+   })
+  
+   fevd.results <- reactive({
+     fevd(model(), n.ahead=input$steps)
+   })
+   
+   observeEvent(input$plot, {
+       output$results <- renderPlot({
+       points <- fevd.results()[input$var1][[1]]
+       points <- apply(points, c(1, 2), function(x){ x*100 })
+       matplot(points, x=c(1:input$steps), ylab="Percent of forecast", xlab="Step number", 
+               lwd=2, type="o", pch=19, col=c(1:length(fevd.results())), lty=1)
+       grid()
+       legendary2(names(fevd.results()), col=c(1:length(fevd.results())), cex=2)
+     })
+   })
+   
+    observeEvent(input$bar.plot, {
+       output$results <- renderPlot({
+       points <- fevd.results()[input$var1][[1]] %>% t()
+       colnames(points) <- paste(1:input$steps)
+       barplot(points, col=c(1:length(fevd.results())), ylab="Shares of forecast", xlab="steps")
+       legendary2(names(fevd.results()), col=c(1:length(fevd.results())), cex=2, line = 2)
+     })
+   })
+    
+     observeEvent(input$numeric.matrix, {
+       output$numeric <- renderTable({
+       points <- fevd.results()[input$var1][[1]] %>% t()
+       points <- apply(points, c(1, 2), function(x){ round(x, 4) })
+       colnames(points) <- paste(1:input$steps)
+       points
+     }, digits=4)
+   })
+    
+     observeEvent(input$hide.numeric.matrix, {
+       output$numeric <- renderTable({return()})
+     })
+    })
+},
+ options = list(height = 1000)
+)
+```
+
+
